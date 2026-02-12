@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowRight, Brain, MapPin, Target, TrendingUp } from "lucide-react"
+import { ArrowRight, Brain, Compass, MapPin, Target, TrendingUp } from "lucide-react"
 
 export function HeroSection({ onStart }: { onStart: () => void }) {
   return (

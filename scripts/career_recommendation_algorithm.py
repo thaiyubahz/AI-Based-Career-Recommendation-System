@@ -739,5 +739,85 @@ def main():
     print(f"  {'=' * 60}\n")
 
 
+def demo():
+    """
+    Demo mode: runs the full algorithm with sample data
+    (no interactive input needed). Shows the complete pipeline.
+    """
+    print("\n" + "#" * 60)
+    print("#" + " " * 58 + "#")
+    print("#    PATHFINDER AI - Career Recommendation System" + " " * 9 + "#")
+    print("#    >>> DEMO MODE (Sample Student Profile) <<<" + " " * 11 + "#")
+    print("#" + " " * 58 + "#")
+    print("#" * 60)
+
+    # Sample student: interested in logic, data, ML, comfortable with math
+    sample_behavioral = {
+        "work_environment": "remote",
+        "activity_preference": "data",
+        "learning_style": "projects",
+        "programming_interest": "ml",
+        "math_comfort": "love",
+        "communication": "technical",
+        "creativity": "innovate",
+    }
+    print("\n  Sample Behavioral Answers:")
+    for qid, answer in sample_behavioral.items():
+        print(f"    {qid}: {answer}")
+
+    # Sample skills: strong Python & data tools, moderate JS & databases
+    sample_skills = {
+        "python": 3,
+        "javascript": 2,
+        "databases": 2,
+        "html_css": 1,
+        "cloud": 1,
+        "data_tools": 3,
+        "git": 2,
+        "devops_tools": 1,
+    }
+    print("\n  Sample Skill Levels:")
+    skill_names = {"python": "Python", "javascript": "JavaScript", "databases": "Databases",
+                   "html_css": "HTML/CSS", "cloud": "Cloud", "data_tools": "Data Tools",
+                   "git": "Git", "devops_tools": "DevOps"}
+    for sid, level in sample_skills.items():
+        print(f"    {skill_names.get(sid, sid)}: {level}/4")
+
+    # Run recommendation
+    print("\n  Running recommendation algorithm...")
+    recommendations = recommend_careers(sample_behavioral, sample_skills)
+
+    # Compute alignment for top career
+    top_career = recommendations[0][0]
+    alignment = compute_alignment_scores(sample_behavioral, sample_skills, top_career)
+
+    # Display results
+    display_results(recommendations, alignment, sample_behavioral, sample_skills)
+
+    # Generate roadmap for top career
+    roadmap = generate_learning_roadmap(top_career, sample_skills)
+    display_roadmap(roadmap, top_career)
+
+    # Summary
+    total_days = sum(r["days"] for r in roadmap)
+    print(f"\n  {'=' * 60}")
+    print(f"  SUMMARY")
+    print(f"  {'=' * 60}")
+    print(f"  Top Career: {top_career}")
+    print(f"  Match Score: {recommendations[0][1]}%")
+    print(f"  Skills to Learn: {len(roadmap)}")
+    print(f"  Estimated Duration: {total_days} days (~{total_days // 30} months)")
+    print(f"\n  Algorithm successfully demonstrated!")
+    print(f"  {'=' * 60}\n")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--demo" in sys.argv or not sys.stdin.isatty():
+        demo()
+    else:
+        try:
+            main()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Interactive mode unavailable. Running demo mode instead...\n")
+            demo()
