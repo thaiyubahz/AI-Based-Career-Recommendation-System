@@ -1,815 +1,559 @@
 """
-PathFinder AI - Career Recommendation Algorithm
-=================================================
-This is the core ML/AI recommendation engine that powers the PathFinder AI platform.
-It uses a weighted scoring system with cosine similarity and a collaborative-filtering
-inspired approach to match users' behavioral traits and skill levels to ideal career paths.
+PathFinder AI - Career Recommendation Algorithm (ML Edition)
+=============================================================
+Machine Learning pipeline using three classifiers:
+  1. Random Forest Classifier
+  2. Support Vector Machine (SVM) with RBF kernel
+  3. XGBoost Classifier
+
+The final prediction is an ensemble average of all three models'
+probability outputs, producing a ranked list of career recommendations.
+
+Pipeline:
+  1. Generate synthetic dataset (2400 student profiles across 12 careers)
+  2. Preprocess: StandardScaler normalization, 80/20 train-test split
+  3. Train all three classifiers
+  4. Evaluate: accuracy, per-model comparison, feature importance
+  5. Ensemble predict: average probability outputs for final ranking
+  6. Generate personalized learning roadmap for the top career
 
 Usage:
-    python career_recommendation_algorithm.py
-
-The algorithm performs the following steps:
-1. Collects behavioral assessment responses (work environment, interests, learning style)
-2. Collects skills proficiency data (Python, JavaScript, databases, etc.)
-3. Builds a user profile vector from both behavioral and skill dimensions
-4. Computes cosine similarity between the user vector and each career's ideal vector
-5. Produces a ranked list of career recommendations with match percentages
-6. Generates a personalized learning roadmap with daily schedules
+    python career_recommendation_algorithm.py          # interactive
+    python career_recommendation_algorithm.py --demo   # auto-demo
 """
 
-import math
-from collections import defaultdict
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report
+from xgboost import XGBClassifier
+import warnings
 
-# =============================================================================
+warnings.filterwarnings("ignore")
+
+
+# =====================================================================
 # DATA DEFINITIONS
-# =============================================================================
+# =====================================================================
 
-# Career paths with their ideal profile vectors
-# Each career has weights for behavioral traits and required skill levels
+CAREERS = [
+    "Software Developer",
+    "Data Scientist",
+    "AI/ML Engineer",
+    "Web Developer",
+    "DevOps Engineer",
+    "Cybersecurity Analyst",
+    "Cloud Architect",
+    "Mobile App Developer",
+    "Database Administrator",
+    "UX/UI Designer",
+    "Product Manager",
+    "Blockchain Developer",
+]
+
+# Ideal profile for each career.
+# behavioral vector: [work_env, activity, learning, prog_interest, math, comm, creativity]
+#   work_env:      0=office, 1=remote, 2=hybrid
+#   activity:      0=building, 1=data, 2=design, 3=managing
+#   learning:      0=courses, 1=projects, 2=reading, 3=mentorship
+#   prog_interest: 0=web, 1=ml, 2=mobile, 3=systems, 4=any
+#   math:          0=avoid, 1=okay, 2=love
+#   comm:          0=writing, 1=technical, 2=presenting
+#   creativity:    0=follow, 1=improve, 2=innovate
+#
+# skills vector: [Python, JavaScript, Databases, HTML/CSS, Cloud, Data Tools, Git, DevOps]
+#   each rated 0-4 (none to expert)
+
 CAREER_PROFILES = {
-    "Software Developer": {
-        "behavioral": {
-            "work_environment": {"remote": 3, "office": 2, "hybrid": 2, "startup": 2},
-            "activity_preference": {"logic": 3, "design": 1, "data": 1, "systems": 2},
-            "learning_style": {"theory": 2, "projects": 3, "structured": 2, "explore": 2},
-            "programming_interest": {"web": 2, "ml": 1, "backend": 3, "security": 1},
-            "math_comfort": {"love": 1, "comfortable": 2, "minimal": 1, "applied": 2},
-            "communication": {"leader": 1, "writer": 2, "visual": 1, "technical": 3},
-            "creativity": {"very": 1, "somewhat": 2, "structured": 2, "innovate": 2},
-        },
-        "skills": {
-            "python": 3, "javascript": 3, "databases": 3,
-            "html_css": 2, "cloud": 2, "data_tools": 1,
-            "git": 3, "devops_tools": 2,
-        },
-        "required_skills": ["Python", "JavaScript", "Git", "Databases", "Data Structures & Algorithms", "System Design"],
-    },
-    "Frontend Developer": {
-        "behavioral": {
-            "work_environment": {"remote": 2, "office": 2, "hybrid": 3, "startup": 2},
-            "activity_preference": {"logic": 1, "design": 3, "data": 0, "systems": 1},
-            "learning_style": {"theory": 1, "projects": 3, "structured": 1, "explore": 3},
-            "programming_interest": {"web": 3, "ml": 0, "backend": 1, "security": 0},
-            "math_comfort": {"love": 0, "comfortable": 1, "minimal": 3, "applied": 1},
-            "communication": {"leader": 1, "writer": 1, "visual": 3, "technical": 2},
-            "creativity": {"very": 3, "somewhat": 2, "structured": 0, "innovate": 2},
-        },
-        "skills": {
-            "python": 1, "javascript": 4, "databases": 1,
-            "html_css": 4, "cloud": 1, "data_tools": 0,
-            "git": 3, "devops_tools": 1,
-        },
-        "required_skills": ["HTML/CSS", "JavaScript", "React/Next.js", "Git", "UI/UX Principles", "Testing"],
-    },
-    "Full Stack Developer": {
-        "behavioral": {
-            "work_environment": {"remote": 3, "office": 2, "hybrid": 3, "startup": 3},
-            "activity_preference": {"logic": 2, "design": 2, "data": 1, "systems": 3},
-            "learning_style": {"theory": 1, "projects": 3, "structured": 1, "explore": 2},
-            "programming_interest": {"web": 3, "ml": 0, "backend": 2, "security": 0},
-            "math_comfort": {"love": 0, "comfortable": 2, "minimal": 2, "applied": 2},
-            "communication": {"leader": 2, "writer": 1, "visual": 2, "technical": 2},
-            "creativity": {"very": 2, "somewhat": 3, "structured": 1, "innovate": 2},
-        },
-        "skills": {
-            "python": 3, "javascript": 4, "databases": 3,
-            "html_css": 3, "cloud": 2, "data_tools": 1,
-            "git": 3, "devops_tools": 2,
-        },
-        "required_skills": ["JavaScript", "Python/Node.js", "Databases", "HTML/CSS", "Git", "Cloud Basics", "APIs"],
-    },
-    "Data Scientist": {
-        "behavioral": {
-            "work_environment": {"remote": 3, "office": 1, "hybrid": 2, "startup": 1},
-            "activity_preference": {"logic": 3, "design": 0, "data": 3, "systems": 1},
-            "learning_style": {"theory": 3, "projects": 2, "structured": 2, "explore": 2},
-            "programming_interest": {"web": 0, "ml": 3, "backend": 1, "security": 0},
-            "math_comfort": {"love": 3, "comfortable": 2, "minimal": 0, "applied": 2},
-            "communication": {"leader": 1, "writer": 2, "visual": 1, "technical": 2},
-            "creativity": {"very": 1, "somewhat": 2, "structured": 2, "innovate": 3},
-        },
-        "skills": {
-            "python": 4, "javascript": 1, "databases": 3,
-            "html_css": 0, "cloud": 1, "data_tools": 4,
-            "git": 2, "devops_tools": 1,
-        },
-        "required_skills": ["Python", "Statistics", "Machine Learning", "SQL", "Data Visualization", "Pandas/NumPy"],
-    },
-    "AI/ML Engineer": {
-        "behavioral": {
-            "work_environment": {"remote": 3, "office": 1, "hybrid": 2, "startup": 1},
-            "activity_preference": {"logic": 3, "design": 0, "data": 3, "systems": 2},
-            "learning_style": {"theory": 3, "projects": 2, "structured": 2, "explore": 2},
-            "programming_interest": {"web": 0, "ml": 3, "backend": 2, "security": 0},
-            "math_comfort": {"love": 3, "comfortable": 2, "minimal": 0, "applied": 2},
-            "communication": {"leader": 1, "writer": 2, "visual": 0, "technical": 3},
-            "creativity": {"very": 0, "somewhat": 2, "structured": 2, "innovate": 3},
-        },
-        "skills": {
-            "python": 4, "javascript": 1, "databases": 2,
-            "html_css": 0, "cloud": 2, "data_tools": 4,
-            "git": 2, "devops_tools": 2,
-        },
-        "required_skills": ["Python", "Machine Learning", "Deep Learning", "Mathematics", "TensorFlow/PyTorch", "Data Engineering"],
-    },
-    "DevOps Engineer": {
-        "behavioral": {
-            "work_environment": {"remote": 3, "office": 1, "hybrid": 2, "startup": 2},
-            "activity_preference": {"logic": 2, "design": 0, "data": 0, "systems": 3},
-            "learning_style": {"theory": 1, "projects": 2, "structured": 3, "explore": 1},
-            "programming_interest": {"web": 0, "ml": 0, "backend": 3, "security": 2},
-            "math_comfort": {"love": 0, "comfortable": 2, "minimal": 1, "applied": 2},
-            "communication": {"leader": 1, "writer": 1, "visual": 0, "technical": 3},
-            "creativity": {"very": 0, "somewhat": 1, "structured": 3, "innovate": 2},
-        },
-        "skills": {
-            "python": 2, "javascript": 1, "databases": 2,
-            "html_css": 0, "cloud": 4, "data_tools": 0,
-            "git": 4, "devops_tools": 4,
-        },
-        "required_skills": ["Linux", "Docker", "Kubernetes", "CI/CD", "Cloud (AWS/GCP)", "Scripting", "Monitoring"],
-    },
-    "Cloud Engineer": {
-        "behavioral": {
-            "work_environment": {"remote": 3, "office": 1, "hybrid": 2, "startup": 1},
-            "activity_preference": {"logic": 2, "design": 0, "data": 1, "systems": 3},
-            "learning_style": {"theory": 2, "projects": 1, "structured": 3, "explore": 1},
-            "programming_interest": {"web": 0, "ml": 0, "backend": 3, "security": 2},
-            "math_comfort": {"love": 0, "comfortable": 1, "minimal": 1, "applied": 2},
-            "communication": {"leader": 1, "writer": 1, "visual": 0, "technical": 3},
-            "creativity": {"very": 0, "somewhat": 1, "structured": 3, "innovate": 1},
-        },
-        "skills": {
-            "python": 2, "javascript": 1, "databases": 2,
-            "html_css": 0, "cloud": 4, "data_tools": 0,
-            "git": 3, "devops_tools": 3,
-        },
-        "required_skills": ["Cloud Platforms (AWS/GCP/Azure)", "Networking", "Security", "Terraform/IaC", "Linux", "Scripting"],
-    },
-    "Cybersecurity Analyst": {
-        "behavioral": {
-            "work_environment": {"remote": 2, "office": 2, "hybrid": 2, "startup": 1},
-            "activity_preference": {"logic": 2, "design": 0, "data": 1, "systems": 2},
-            "learning_style": {"theory": 2, "projects": 1, "structured": 3, "explore": 1},
-            "programming_interest": {"web": 0, "ml": 0, "backend": 1, "security": 3},
-            "math_comfort": {"love": 1, "comfortable": 2, "minimal": 1, "applied": 1},
-            "communication": {"leader": 1, "writer": 2, "visual": 0, "technical": 2},
-            "creativity": {"very": 0, "somewhat": 1, "structured": 2, "innovate": 1},
-        },
-        "skills": {
-            "python": 3, "javascript": 1, "databases": 2,
-            "html_css": 0, "cloud": 2, "data_tools": 0,
-            "git": 2, "devops_tools": 2,
-        },
-        "required_skills": ["Networking", "Linux", "Security Tools", "Python", "Cryptography", "Risk Assessment"],
-    },
-    "Data Engineer": {
-        "behavioral": {
-            "work_environment": {"remote": 3, "office": 1, "hybrid": 2, "startup": 1},
-            "activity_preference": {"logic": 2, "design": 0, "data": 3, "systems": 2},
-            "learning_style": {"theory": 2, "projects": 2, "structured": 2, "explore": 1},
-            "programming_interest": {"web": 0, "ml": 1, "backend": 2, "security": 0},
-            "math_comfort": {"love": 2, "comfortable": 2, "minimal": 0, "applied": 3},
-            "communication": {"leader": 1, "writer": 1, "visual": 0, "technical": 3},
-            "creativity": {"very": 0, "somewhat": 1, "structured": 3, "innovate": 1},
-        },
-        "skills": {
-            "python": 4, "javascript": 0, "databases": 4,
-            "html_css": 0, "cloud": 3, "data_tools": 3,
-            "git": 2, "devops_tools": 2,
-        },
-        "required_skills": ["Python", "SQL", "Spark/Hadoop", "Cloud Services", "ETL Pipelines", "Data Modeling"],
-    },
-    "UI/UX Designer": {
-        "behavioral": {
-            "work_environment": {"remote": 2, "office": 3, "hybrid": 2, "startup": 2},
-            "activity_preference": {"logic": 0, "design": 3, "data": 1, "systems": 0},
-            "learning_style": {"theory": 1, "projects": 2, "structured": 1, "explore": 3},
-            "programming_interest": {"web": 2, "ml": 0, "backend": 0, "security": 0},
-            "math_comfort": {"love": 0, "comfortable": 1, "minimal": 3, "applied": 0},
-            "communication": {"leader": 2, "writer": 1, "visual": 3, "technical": 1},
-            "creativity": {"very": 3, "somewhat": 2, "structured": 0, "innovate": 2},
-        },
-        "skills": {
-            "python": 0, "javascript": 1, "databases": 0,
-            "html_css": 3, "cloud": 0, "data_tools": 0,
-            "git": 1, "devops_tools": 0,
-        },
-        "required_skills": ["Figma/Sketch", "User Research", "Prototyping", "HTML/CSS Basics", "Design Thinking", "Accessibility"],
-    },
-    "Product Manager (Tech)": {
-        "behavioral": {
-            "work_environment": {"remote": 1, "office": 3, "hybrid": 2, "startup": 2},
-            "activity_preference": {"logic": 1, "design": 1, "data": 2, "systems": 1},
-            "learning_style": {"theory": 1, "projects": 2, "structured": 2, "explore": 2},
-            "programming_interest": {"web": 1, "ml": 0, "backend": 1, "security": 0},
-            "math_comfort": {"love": 0, "comfortable": 2, "minimal": 3, "applied": 1},
-            "communication": {"leader": 3, "writer": 2, "visual": 2, "technical": 1},
-            "creativity": {"very": 2, "somewhat": 2, "structured": 1, "innovate": 2},
-        },
-        "skills": {
-            "python": 1, "javascript": 1, "databases": 1,
-            "html_css": 1, "cloud": 0, "data_tools": 1,
-            "git": 1, "devops_tools": 0,
-        },
-        "required_skills": ["Product Strategy", "Data Analysis", "Communication", "Agile/Scrum", "Technical Literacy", "User Research"],
-    },
-    "Project Manager (IT)": {
-        "behavioral": {
-            "work_environment": {"remote": 1, "office": 3, "hybrid": 2, "startup": 1},
-            "activity_preference": {"logic": 1, "design": 0, "data": 1, "systems": 1},
-            "learning_style": {"theory": 1, "projects": 1, "structured": 3, "explore": 1},
-            "programming_interest": {"web": 1, "ml": 0, "backend": 1, "security": 0},
-            "math_comfort": {"love": 0, "comfortable": 1, "minimal": 3, "applied": 1},
-            "communication": {"leader": 3, "writer": 2, "visual": 1, "technical": 1},
-            "creativity": {"very": 1, "somewhat": 2, "structured": 3, "innovate": 1},
-        },
-        "skills": {
-            "python": 0, "javascript": 0, "databases": 1,
-            "html_css": 0, "cloud": 0, "data_tools": 0,
-            "git": 1, "devops_tools": 0,
-        },
-        "required_skills": ["Agile/Scrum", "Communication", "Risk Management", "Jira/Tools", "Budgeting", "Technical Basics"],
-    },
+    "Software Developer":    {"behavioral": [2, 0, 1, 4, 1, 1, 1], "skills": [4, 3, 3, 2, 2, 1, 3, 2]},
+    "Data Scientist":        {"behavioral": [1, 1, 1, 1, 2, 1, 2], "skills": [4, 1, 3, 1, 2, 4, 2, 1]},
+    "AI/ML Engineer":        {"behavioral": [1, 1, 2, 1, 2, 1, 2], "skills": [4, 1, 2, 1, 3, 4, 2, 1]},
+    "Web Developer":         {"behavioral": [1, 0, 1, 0, 1, 1, 1], "skills": [2, 4, 2, 4, 1, 1, 3, 1]},
+    "DevOps Engineer":       {"behavioral": [2, 0, 1, 3, 1, 1, 1], "skills": [3, 2, 3, 1, 4, 1, 3, 4]},
+    "Cybersecurity Analyst": {"behavioral": [0, 0, 2, 3, 1, 1, 1], "skills": [3, 1, 3, 1, 3, 1, 2, 3]},
+    "Cloud Architect":       {"behavioral": [2, 0, 2, 3, 1, 2, 1], "skills": [3, 2, 3, 1, 4, 2, 2, 4]},
+    "Mobile App Developer":  {"behavioral": [1, 0, 1, 2, 1, 1, 2], "skills": [2, 3, 2, 3, 2, 1, 3, 1]},
+    "Database Administrator":{"behavioral": [0, 0, 0, 3, 1, 1, 0], "skills": [2, 1, 4, 1, 2, 2, 2, 2]},
+    "UX/UI Designer":        {"behavioral": [1, 2, 3, 0, 0, 2, 2], "skills": [1, 3, 1, 4, 1, 1, 2, 1]},
+    "Product Manager":       {"behavioral": [2, 3, 3, 4, 1, 2, 1], "skills": [2, 2, 2, 2, 2, 2, 2, 2]},
+    "Blockchain Developer":  {"behavioral": [1, 0, 2, 3, 2, 1, 2], "skills": [4, 3, 3, 2, 2, 1, 3, 2]},
 }
 
-
-# Behavioral questions with option mappings
-BEHAVIORAL_QUESTIONS = [
-    {
-        "id": "work_environment",
-        "question": "What type of work environment do you prefer?",
-        "options": {
-            "a": ("Remote / Independent work", "remote"),
-            "b": ("Collaborative office setting", "office"),
-            "c": ("Mix of team and solo work", "hybrid"),
-            "d": ("Fast-paced startup culture", "startup"),
-        },
-    },
-    {
-        "id": "activity_preference",
-        "question": "Which activity excites you the most?",
-        "options": {
-            "a": ("Solving complex puzzles and logical problems", "logic"),
-            "b": ("Designing beautiful and intuitive interfaces", "design"),
-            "c": ("Analyzing data to find insights", "data"),
-            "d": ("Building and deploying systems", "systems"),
-        },
-    },
-    {
-        "id": "learning_style",
-        "question": "How do you approach learning new technologies?",
-        "options": {
-            "a": ("I dive deep into documentation and theory", "theory"),
-            "b": ("I learn by building projects", "projects"),
-            "c": ("I follow structured courses and certifications", "structured"),
-            "d": ("I experiment and explore on my own", "explore"),
-        },
-    },
-    {
-        "id": "programming_interest",
-        "question": "Which programming area interests you the most?",
-        "options": {
-            "a": ("Web applications and user-facing products", "web"),
-            "b": ("Machine learning and artificial intelligence", "ml"),
-            "c": ("Backend systems, APIs, and infrastructure", "backend"),
-            "d": ("Security, networking, and ethical hacking", "security"),
-        },
-    },
-    {
-        "id": "math_comfort",
-        "question": "How do you feel about mathematics and statistics?",
-        "options": {
-            "a": ("I love it and want it in my daily work", "love"),
-            "b": ("I'm comfortable with it when needed", "comfortable"),
-            "c": ("I prefer minimal math involvement", "minimal"),
-            "d": ("I enjoy applied math but not pure theory", "applied"),
-        },
-    },
-    {
-        "id": "communication",
-        "question": "What best describes your communication style?",
-        "options": {
-            "a": ("I enjoy presenting ideas and leading discussions", "leader"),
-            "b": ("I prefer writing detailed documentation", "writer"),
-            "c": ("I communicate best through visual work", "visual"),
-            "d": ("I focus on technical precision and code quality", "technical"),
-        },
-    },
-    {
-        "id": "creativity",
-        "question": "How important is creativity in your ideal career?",
-        "options": {
-            "a": ("Very important - I want to create visual experiences", "very"),
-            "b": ("Somewhat - creative problem solving matters to me", "somewhat"),
-            "c": ("I prefer structured, systematic work", "structured"),
-            "d": ("I want to innovate with new technologies", "innovate"),
-        },
-    },
+SKILL_NAMES = [
+    "Python", "JavaScript", "Databases", "HTML/CSS",
+    "Cloud", "Data Tools", "Git", "DevOps",
 ]
 
-# Skills assessment questions
-SKILLS_QUESTIONS = [
-    {"id": "python", "question": "What is your proficiency level in Python?"},
-    {"id": "javascript", "question": "What is your proficiency level in JavaScript/TypeScript?"},
-    {"id": "databases", "question": "How experienced are you with databases (SQL/NoSQL)?"},
-    {"id": "html_css", "question": "What is your experience with HTML/CSS and UI design?"},
-    {"id": "cloud", "question": "How familiar are you with cloud services (AWS/GCP/Azure)?"},
-    {"id": "data_tools", "question": "What is your proficiency with Data Science tools (Pandas, NumPy, etc.)?"},
-    {"id": "git", "question": "How experienced are you with version control (Git)?"},
-    {"id": "devops_tools", "question": "What is your experience with DevOps tools (Docker, Kubernetes, CI/CD)?"},
+BEHAVIORAL_NAMES = [
+    "Work Environment", "Activity Preference", "Learning Style",
+    "Programming Interest", "Math Comfort", "Communication", "Creativity",
 ]
 
-SKILL_LEVELS = {
-    "a": ("Currently learning", 1),
-    "b": ("Beginner", 2),
-    "c": ("Intermediate", 3),
-    "d": ("Expert", 4),
-}
+FEATURE_NAMES = BEHAVIORAL_NAMES + SKILL_NAMES
 
-# Skill learning roadmaps with estimated days
-SKILL_ROADMAPS = {
-    "Python": {"days": 30, "topics": ["Variables & Data Types", "Control Flow", "Functions", "OOP", "File Handling", "Modules", "Error Handling", "APIs"]},
-    "JavaScript": {"days": 35, "topics": ["Variables & Types", "Functions & Scope", "DOM", "Async/Await", "ES6+", "Fetch API", "Modules"]},
-    "HTML/CSS": {"days": 15, "topics": ["HTML Semantics", "CSS Selectors", "Flexbox", "Grid", "Responsive Design", "Animations"]},
-    "Databases": {"days": 20, "topics": ["SQL Fundamentals", "Table Design", "Joins", "Indexing", "NoSQL Basics", "Query Optimization"]},
-    "Machine Learning": {"days": 45, "topics": ["Linear Algebra", "Probability", "Supervised Learning", "Unsupervised Learning", "Neural Networks", "Scikit-learn"]},
-    "Git": {"days": 7, "topics": ["Init & Clone", "Add & Commit", "Branching", "Merging", "Remote Repos", "Pull Requests"]},
-    "Docker": {"days": 14, "topics": ["Containers", "Dockerfiles", "Images", "Docker Compose", "Networking", "Volumes"]},
-    "Cloud Platforms (AWS/GCP/Azure)": {"days": 30, "topics": ["Cloud Concepts", "Compute", "Storage", "Databases", "Networking", "IAM", "Serverless"]},
-    "Data Structures & Algorithms": {"days": 40, "topics": ["Arrays", "Linked Lists", "Trees", "Graphs", "Sorting", "Dynamic Programming", "Hash Maps"]},
-    "Statistics": {"days": 20, "topics": ["Descriptive Stats", "Probability", "Distributions", "Hypothesis Testing", "Regression"]},
-    "System Design": {"days": 25, "topics": ["Scalability", "Load Balancing", "Caching", "Database Sharding", "Microservices", "API Design"]},
-    "Networking": {"days": 20, "topics": ["OSI Model", "TCP/IP", "DNS", "HTTP/HTTPS", "Firewalls", "Subnetting"]},
-    "Linux": {"days": 14, "topics": ["File System", "Commands", "Permissions", "Shell Scripting", "Package Management"]},
-    "Figma/Sketch": {"days": 15, "topics": ["Interface Basics", "Components", "Auto Layout", "Prototyping", "Design Systems"]},
+SKILL_RESOURCES = {
+    "Python":     {"url": "https://docs.python.org/3/tutorial/",                       "platform": "Python.org"},
+    "JavaScript": {"url": "https://javascript.info/",                                  "platform": "JavaScript.info"},
+    "Databases":  {"url": "https://www.khanacademy.org/computing/computer-programming/sql", "platform": "Khan Academy"},
+    "HTML/CSS":   {"url": "https://web.dev/learn/css/",                                "platform": "web.dev"},
+    "Cloud":      {"url": "https://aws.amazon.com/training/",                          "platform": "AWS Training"},
+    "Data Tools": {"url": "https://pandas.pydata.org/docs/getting_started/",           "platform": "Pandas Docs"},
+    "Git":        {"url": "https://learngitbranching.js.org/",                         "platform": "Learn Git Branching"},
+    "DevOps":     {"url": "https://roadmap.sh/devops",                                 "platform": "roadmap.sh"},
 }
 
 
-# =============================================================================
-# CORE ALGORITHM
-# =============================================================================
+# =====================================================================
+# SYNTHETIC DATASET GENERATOR
+# =====================================================================
 
-def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
+def generate_synthetic_dataset(n_samples=2400, noise_std=0.55, seed=42):
     """
-    Compute cosine similarity between two vectors.
-    Returns a value between -1 and 1 (1 = identical direction).
-    
-    Formula: cos(theta) = (A . B) / (||A|| * ||B||)
-    """
-    dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
-    magnitude_a = math.sqrt(sum(a ** 2 for a in vec_a))
-    magnitude_b = math.sqrt(sum(b ** 2 for b in vec_b))
-    
-    if magnitude_a == 0 or magnitude_b == 0:
-        return 0.0
-    
-    return dot_product / (magnitude_a * magnitude_b)
+    Generate a synthetic dataset of student profiles with labeled career outcomes.
+    Each sample: 7 behavioral + 8 skill = 15 features.
+    Labels: one of 12 career paths.
 
+    Samples are drawn around each career's ideal profile with Gaussian noise
+    to create realistic variability.
+    """
+    rng = np.random.RandomState(seed)
+    samples_per_career = n_samples // len(CAREERS)
 
-def build_user_behavioral_vector(answers: dict[str, str]) -> list[float]:
-    """
-    Convert behavioral answers into a numerical feature vector.
-    Each answer maps to a value in each behavioral dimension.
-    """
-    # Build a flat vector from all behavioral dimensions
-    vector = []
-    for question in BEHAVIORAL_QUESTIONS:
-        qid = question["id"]
-        user_answer = answers.get(qid, "")
-        # For each possible option in this question, encode 1 if selected, 0 otherwise
-        for _key, (_label, value) in question["options"].items():
-            vector.append(1.0 if value == user_answer else 0.0)
-    return vector
+    X_list, y_list = [], []
 
+    for career in CAREERS:
+        profile = CAREER_PROFILES[career]
+        ideal = np.array(profile["behavioral"] + profile["skills"], dtype=float)
 
-def build_career_behavioral_vector(career_profile: dict) -> list[float]:
-    """
-    Convert a career's ideal behavioral profile into the same vector space
-    as the user's behavioral vector, enabling cosine similarity comparison.
-    """
-    vector = []
-    for question in BEHAVIORAL_QUESTIONS:
-        qid = question["id"]
-        behavioral_weights = career_profile["behavioral"].get(qid, {})
-        for _key, (_label, value) in question["options"].items():
-            vector.append(float(behavioral_weights.get(value, 0)))
-    return vector
+        for _ in range(samples_per_career):
+            noise = rng.normal(0, noise_std, size=len(ideal))
+            sample = ideal + noise
+
+            # Clamp behavioral features
+            sample[0] = np.clip(sample[0], 0, 2)
+            sample[1] = np.clip(sample[1], 0, 3)
+            sample[2] = np.clip(sample[2], 0, 3)
+            sample[3] = np.clip(sample[3], 0, 4)
+            sample[4] = np.clip(sample[4], 0, 2)
+            sample[5] = np.clip(sample[5], 0, 2)
+            sample[6] = np.clip(sample[6], 0, 2)
+            # Clamp skills 0-4
+            sample[7:] = np.clip(sample[7:], 0, 4)
+
+            X_list.append(sample)
+            y_list.append(career)
+
+    X = np.array(X_list)
+    y = np.array(y_list)
+    indices = rng.permutation(len(X))
+    return X[indices], y[indices]
 
 
-def build_skill_vector(skill_levels: dict[str, int]) -> list[float]:
+# =====================================================================
+# MODEL TRAINING
+# =====================================================================
+
+def train_models(X_train, y_train, X_test, y_test, label_encoder):
     """
-    Convert skill levels into a numerical vector.
-    Skills are ordered consistently: python, javascript, databases, 
-    html_css, cloud, data_tools, git, devops_tools
+    Train Random Forest, SVM, and XGBoost.
+    Returns dict of models and dict of accuracy metrics.
     """
-    skill_order = ["python", "javascript", "databases", "html_css", "cloud", "data_tools", "git", "devops_tools"]
-    return [float(skill_levels.get(s, 0)) for s in skill_order]
+    models, metrics = {}, {}
+
+    # -- Random Forest --
+    print("\n  [1/3] Training Random Forest Classifier...")
+    rf = RandomForestClassifier(
+        n_estimators=200, max_depth=20,
+        min_samples_split=5, min_samples_leaf=2,
+        random_state=42, n_jobs=-1,
+    )
+    rf.fit(X_train, y_train)
+    rf_acc = accuracy_score(y_test, rf.predict(X_test))
+    models["Random Forest"] = rf
+    metrics["Random Forest"] = rf_acc
+    print(f"        Accuracy: {rf_acc:.4f} ({rf_acc * 100:.1f}%)")
+
+    # -- SVM --
+    print("\n  [2/3] Training Support Vector Machine (SVM)...")
+    svm = SVC(kernel="rbf", C=10, gamma="scale", probability=True, random_state=42)
+    svm.fit(X_train, y_train)
+    svm_acc = accuracy_score(y_test, svm.predict(X_test))
+    models["SVM"] = svm
+    metrics["SVM"] = svm_acc
+    print(f"        Accuracy: {svm_acc:.4f} ({svm_acc * 100:.1f}%)")
+
+    # -- XGBoost --
+    print("\n  [3/3] Training XGBoost Classifier...")
+    xgb = XGBClassifier(
+        n_estimators=200, learning_rate=0.1, max_depth=6,
+        subsample=0.8, colsample_bytree=0.8,
+        use_label_encoder=False, eval_metric="mlogloss",
+        random_state=42, verbosity=0,
+    )
+    y_train_enc = label_encoder.transform(y_train)
+    y_test_enc = label_encoder.transform(y_test)
+    xgb.fit(X_train, y_train_enc)
+    xgb_acc = accuracy_score(y_test_enc, xgb.predict(X_test))
+    models["XGBoost"] = xgb
+    metrics["XGBoost"] = xgb_acc
+    print(f"        Accuracy: {xgb_acc:.4f} ({xgb_acc * 100:.1f}%)")
+
+    return models, metrics
 
 
-def recommend_careers(
-    behavioral_answers: dict[str, str],
-    skill_levels: dict[str, int],
-    behavioral_weight: float = 0.6,
-    skill_weight: float = 0.4,
-) -> list[tuple[str, float, dict]]:
+# =====================================================================
+# ENSEMBLE PREDICTION
+# =====================================================================
+
+def ensemble_predict(models, scaler, label_encoder, feature_vector):
     """
-    Main recommendation algorithm.
-    
-    Combines behavioral similarity and skill similarity using weighted scoring.
-    
-    Parameters:
-        behavioral_answers: dict mapping question IDs to selected option values
-        skill_levels: dict mapping skill IDs to proficiency scores (1-4)
-        behavioral_weight: weight for behavioral similarity (default 0.6)
-        skill_weight: weight for skill similarity (default 0.4)
-    
-    Returns:
-        List of (career_name, match_percentage, career_data) sorted by match descending
+    Average probability outputs from all 3 models.
+    Returns list of (career, match_percent) sorted descending.
     """
-    user_behavioral_vec = build_user_behavioral_vector(behavioral_answers)
-    user_skill_vec = build_skill_vector(skill_levels)
-    
-    results = []
-    
-    for career_name, career_data in CAREER_PROFILES.items():
-        # Behavioral similarity via cosine
-        career_behavioral_vec = build_career_behavioral_vector(career_data)
-        behavioral_sim = cosine_similarity(user_behavioral_vec, career_behavioral_vec)
-        
-        # Skill similarity via cosine
-        career_skill_vec = build_skill_vector(career_data["skills"])
-        skill_sim = cosine_similarity(user_skill_vec, career_skill_vec)
-        
-        # Weighted combination
-        combined_score = (behavioral_weight * behavioral_sim) + (skill_weight * skill_sim)
-        
-        # Normalize to percentage (cosine sim ranges from -1 to 1, but typically 0 to 1 here)
-        match_percentage = max(0, min(100, round(combined_score * 100)))
-        
-        results.append((career_name, match_percentage, career_data))
-    
-    # Sort by match percentage descending
-    results.sort(key=lambda x: x[1], reverse=True)
-    return results
+    X_in = scaler.transform([feature_vector])
+    all_probs = []
+
+    # RF
+    rf = models["Random Forest"]
+    all_probs.append(dict(zip(rf.classes_, rf.predict_proba(X_in)[0])))
+
+    # SVM
+    svm = models["SVM"]
+    all_probs.append(dict(zip(svm.classes_, svm.predict_proba(X_in)[0])))
+
+    # XGB (encoded labels)
+    xgb = models["XGBoost"]
+    xgb_probs = xgb.predict_proba(X_in)[0]
+    xgb_classes = label_encoder.inverse_transform(range(len(xgb_probs)))
+    all_probs.append(dict(zip(xgb_classes, xgb_probs)))
+
+    ensemble = {}
+    for career in CAREERS:
+        ensemble[career] = np.mean([p.get(career, 0.0) for p in all_probs])
+
+    ranked = sorted(ensemble.items(), key=lambda x: x[1], reverse=True)
+    return [(c, round(p * 100, 1)) for c, p in ranked]
 
 
-def compute_alignment_scores(
-    behavioral_answers: dict[str, str],
-    skill_levels: dict[str, int],
-    chosen_career: str,
-) -> dict[str, float]:
-    """
-    Compute granular alignment scores between the user's profile and chosen career.
-    Returns a breakdown of how well skills, interests, and the career align.
-    """
-    career_data = CAREER_PROFILES.get(chosen_career)
-    if not career_data:
-        return {"skills_alignment": 0, "interest_alignment": 0, "overall_alignment": 0}
-    
-    # Skill alignment: how close user skills are to the career's ideal
-    user_skill_vec = build_skill_vector(skill_levels)
-    career_skill_vec = build_skill_vector(career_data["skills"])
-    skills_alignment = cosine_similarity(user_skill_vec, career_skill_vec) * 100
-    
-    # Interest alignment: behavioral similarity
-    user_beh_vec = build_user_behavioral_vector(behavioral_answers)
-    career_beh_vec = build_career_behavioral_vector(career_data)
-    interest_alignment = cosine_similarity(user_beh_vec, career_beh_vec) * 100
-    
-    # Overall
-    overall = (skills_alignment * 0.4 + interest_alignment * 0.6)
-    
-    return {
-        "skills_alignment": round(max(0, skills_alignment), 1),
-        "interest_alignment": round(max(0, interest_alignment), 1),
-        "overall_alignment": round(max(0, overall), 1),
-    }
+def get_per_model_predictions(models, scaler, label_encoder, feature_vector):
+    """Per-model probability breakdown for the display table."""
+    X_in = scaler.transform([feature_vector])
+    result = {}
+
+    rf = models["Random Forest"]
+    result["Random Forest"] = {c: round(p * 100, 1) for c, p in zip(rf.classes_, rf.predict_proba(X_in)[0])}
+
+    svm = models["SVM"]
+    result["SVM"] = {c: round(p * 100, 1) for c, p in zip(svm.classes_, svm.predict_proba(X_in)[0])}
+
+    xgb = models["XGBoost"]
+    xgb_probs = xgb.predict_proba(X_in)[0]
+    xgb_classes = label_encoder.inverse_transform(range(len(xgb_probs)))
+    result["XGBoost"] = {c: round(p * 100, 1) for c, p in zip(xgb_classes, xgb_probs)}
+
+    return result
 
 
-def generate_learning_roadmap(career_name: str, skill_levels: dict[str, int]) -> list[dict]:
-    """
-    Generate a personalized learning roadmap for a chosen career.
-    Prioritizes skills the user is weakest in and includes daily schedules.
-    
-    Returns a list of skill plans, each with:
-        - skill name
-        - current level
-        - estimated days
-        - daily tasks
-        - topics to cover
-    """
-    career_data = CAREER_PROFILES.get(career_name)
-    if not career_data:
-        return []
-    
-    # Map user's skill levels to career requirements
-    skill_name_map = {
-        "python": "Python",
-        "javascript": "JavaScript",
-        "databases": "Databases",
-        "html_css": "HTML/CSS",
-        "cloud": "Cloud Platforms (AWS/GCP/Azure)",
-        "data_tools": "Data Science Tools",
-        "git": "Git",
-        "devops_tools": "DevOps Tools",
-    }
-    
+# =====================================================================
+# FEATURE IMPORTANCE ANALYSIS
+# =====================================================================
+
+def analyze_feature_importance(models):
+    """Extract feature importances from RF and XGBoost (SVM RBF has none)."""
+    print("\n  " + "=" * 60)
+    print("  FEATURE IMPORTANCE ANALYSIS")
+    print("  " + "=" * 60)
+
+    for name in ["Random Forest", "XGBoost"]:
+        model = models[name]
+        importances = model.feature_importances_
+        ranked = sorted(zip(FEATURE_NAMES, importances), key=lambda x: x[1], reverse=True)
+        print(f"\n  {name} - Top 8 Features:")
+        for i, (feat, imp) in enumerate(ranked[:8]):
+            bar = "#" * int(imp * 120)
+            print(f"    {i + 1:2d}. {feat:<22s} {imp:.4f}  {bar}")
+
+
+# =====================================================================
+# LEARNING ROADMAP
+# =====================================================================
+
+def generate_learning_roadmap(career, user_skills):
+    """Compare user skills to ideal; return gaps with resources."""
+    ideal = CAREER_PROFILES[career]["skills"]
     roadmap = []
-    
-    for skill in career_data["required_skills"]:
-        # Find matching roadmap
-        roadmap_data = SKILL_ROADMAPS.get(skill)
-        if not roadmap_data:
+    for skill, target, current in zip(SKILL_NAMES, ideal, user_skills):
+        gap = target - current
+        if gap > 0:
+            res = SKILL_RESOURCES.get(skill, {"url": "#", "platform": "Online"})
             roadmap.append({
                 "skill": skill,
-                "current_level": "Unknown",
-                "days": 14,
-                "topics": [f"Study {skill} fundamentals", f"Practice {skill}", f"Build projects with {skill}"],
-                "daily_tasks": [f"Day {i+1}: Study and practice {skill}" for i in range(14)],
+                "current": current,
+                "target": target,
+                "gap": gap,
+                "days": gap * 15,
+                "resource": res,
             })
-            continue
-        
-        # Find user's current level for this skill
-        current_level = 0
-        for skill_id, display_name in skill_name_map.items():
-            if display_name.lower() in skill.lower() or skill.lower() in display_name.lower():
-                current_level = skill_levels.get(skill_id, 0)
-                break
-        
-        # Adjust days based on current level (experts need less time)
-        level_multipliers = {0: 1.0, 1: 1.0, 2: 0.8, 3: 0.5, 4: 0.2}
-        adjusted_days = max(3, int(roadmap_data["days"] * level_multipliers.get(current_level, 1.0)))
-        
-        level_names = {0: "Not started", 1: "Learning", 2: "Beginner", 3: "Intermediate", 4: "Expert"}
-        
-        # Generate daily tasks from topics
-        topics = roadmap_data["topics"]
-        daily_tasks = []
-        for day in range(1, adjusted_days + 1):
-            topic_idx = min(int((day - 1) / max(1, adjusted_days // len(topics))), len(topics) - 1)
-            daily_tasks.append(f"Day {day}: {topics[topic_idx]} - Study & Practice")
-        
-        roadmap.append({
-            "skill": skill,
-            "current_level": level_names.get(current_level, "Unknown"),
-            "days": adjusted_days,
-            "topics": topics,
-            "daily_tasks": daily_tasks,
-        })
-    
-    # Sort by priority: weakest skills first
-    roadmap.sort(key=lambda x: {"Not started": 0, "Learning": 1, "Beginner": 2, "Intermediate": 3, "Expert": 4}.get(x["current_level"], 0))
-    
+    roadmap.sort(key=lambda x: x["gap"], reverse=True)
     return roadmap
 
 
-# =============================================================================
-# INTERACTIVE CLI
-# =============================================================================
+# =====================================================================
+# DISPLAY HELPERS
+# =====================================================================
 
-def collect_behavioral_answers() -> dict[str, str]:
-    """Collect behavioral assessment answers from the user via CLI."""
-    print("\n" + "=" * 60)
-    print("  PART 1: BEHAVIORAL ASSESSMENT")
-    print("  Understanding your work style and interests")
-    print("=" * 60)
-    
-    answers = {}
-    for i, q in enumerate(BEHAVIORAL_QUESTIONS, 1):
-        print(f"\nQ{i}. {q['question']}")
-        for key, (label, _value) in q["options"].items():
-            print(f"   {key}) {label}")
-        
-        while True:
-            choice = input("\n   Your answer (a/b/c/d): ").strip().lower()
-            if choice in q["options"]:
-                _label, value = q["options"][choice]
-                answers[q["id"]] = value
-                print(f"   -> Selected: {_label}")
-                break
-            print("   Invalid input. Please enter a, b, c, or d.")
-    
-    return answers
+def display_model_comparison(metrics):
+    print("\n  " + "=" * 60)
+    print("  MODEL PERFORMANCE COMPARISON")
+    print("  " + "=" * 60)
+    print(f"  {'Model':<20s} {'Accuracy':>10s} {'Score':>10s}")
+    print("  " + "-" * 42)
+    best = max(metrics, key=metrics.get)
+    for m, acc in sorted(metrics.items(), key=lambda x: x[1], reverse=True):
+        tag = " <-- Best" if m == best else ""
+        print(f"  {m:<20s} {acc * 100:>9.1f}% {acc:>9.4f}{tag}")
+    avg = np.mean(list(metrics.values()))
+    print("  " + "-" * 42)
+    print(f"  {'Ensemble Average':<20s} {avg * 100:>9.1f}% {avg:>9.4f}")
 
 
-def collect_skill_levels() -> dict[str, int]:
-    """Collect skill proficiency levels from the user via CLI."""
-    print("\n" + "=" * 60)
-    print("  PART 2: SKILLS ASSESSMENT")
-    print("  Evaluating your technical proficiency")
-    print("=" * 60)
-    
-    print("\n  Proficiency Levels:")
-    for key, (label, score) in SKILL_LEVELS.items():
-        print(f"   {key}) {label} (Score: {score}/4)")
-    
-    levels = {}
-    for i, q in enumerate(SKILLS_QUESTIONS, 1):
-        print(f"\nQ{i}. {q['question']}")
-        
-        while True:
-            choice = input("   Your level (a/b/c/d): ").strip().lower()
-            if choice in SKILL_LEVELS:
-                _label, score = SKILL_LEVELS[choice]
-                levels[q["id"]] = score
-                print(f"   -> {_label} ({score}/4)")
-                break
-            print("   Invalid input. Please enter a, b, c, or d.")
-    
-    return levels
+def display_recommendations(ranked, per_model):
+    print("\n  " + "=" * 60)
+    print("  CAREER RECOMMENDATIONS  (Ensemble of RF + SVM + XGB)")
+    print("  " + "=" * 60)
+    print(f"  {'Rank':<6s} {'Career':<24s} {'Ensemble':>9s} {'RF':>6s} {'SVM':>6s} {'XGB':>6s}")
+    print("  " + "-" * 58)
+    for i, (career, pct) in enumerate(ranked[:6], 1):
+        rf  = per_model["Random Forest"].get(career, 0)
+        svm = per_model["SVM"].get(career, 0)
+        xgb = per_model["XGBoost"].get(career, 0)
+        print(f"  #{i:<5d} {career:<24s} {pct:>8.1f}% {rf:>5.1f}% {svm:>5.1f}% {xgb:>5.1f}%")
 
 
-def display_results(
-    recommendations: list[tuple[str, float, dict]],
-    alignment: dict[str, float],
-    behavioral_answers: dict[str, str],
-    skill_levels: dict[str, int],
-):
-    """Display recommendation results with charts (text-based)."""
-    print("\n" + "=" * 60)
-    print("  YOUR CAREER ASSESSMENT RESULTS")
-    print("=" * 60)
-    
-    # Alignment scores
-    print(f"\n  Skills-Interest-Career Alignment:")
-    print(f"  {'Skills Alignment:':<25} {alignment['skills_alignment']:.1f}%  {'*' * int(alignment['skills_alignment'] / 5)}")
-    print(f"  {'Interest Alignment:':<25} {alignment['interest_alignment']:.1f}%  {'*' * int(alignment['interest_alignment'] / 5)}")
-    print(f"  {'Overall Alignment:':<25} {alignment['overall_alignment']:.1f}%  {'*' * int(alignment['overall_alignment'] / 5)}")
-    
-    # Skills radar (text-based)
-    print(f"\n  Your Skills Profile:")
-    skill_names = {"python": "Python", "javascript": "JavaScript", "databases": "Databases",
-                   "html_css": "HTML/CSS", "cloud": "Cloud", "data_tools": "Data Tools",
-                   "git": "Git", "devops_tools": "DevOps"}
-    for skill_id, display_name in skill_names.items():
-        level = skill_levels.get(skill_id, 0)
-        bar = "#" * (level * 5)
-        level_text = ["N/A", "Learning", "Beginner", "Intermediate", "Expert"][level]
-        print(f"    {display_name:<15} [{bar:<20}] {level_text}")
-    
-    # Career recommendations
-    print(f"\n  Top Career Recommendations:")
-    print(f"  {'Rank':<6} {'Career':<30} {'Match':>8}")
-    print(f"  {'-' * 46}")
-    for i, (name, match, _data) in enumerate(recommendations[:6], 1):
-        bar = "#" * int(match / 5)
-        print(f"  #{i:<5} {name:<30} {match:>5}%  {bar}")
-    
-    return recommendations
+def display_roadmap(roadmap, career):
+    if not roadmap:
+        print(f"\n  You already have all the skills needed for {career}!")
+        return
+    print(f"\n  " + "=" * 60)
+    print(f"  LEARNING ROADMAP FOR: {career.upper()}")
+    print(f"  " + "=" * 60)
+    total = 0
+    for step, item in enumerate(roadmap, 1):
+        total += item["days"]
+        cur_bar = "*" * item["current"] + "." * (4 - item["current"])
+        tgt_bar = "*" * item["target"]  + "." * (4 - item["target"])
+        print(f"\n  Step {step}: {item['skill']}")
+        print(f"    Current:  [{cur_bar}] Level {item['current']}")
+        print(f"    Target:   [{tgt_bar}] Level {item['target']}")
+        print(f"    Gap:      {item['gap']} level(s)  |  ~{item['days']} days")
+        print(f"    Resource: {item['resource']['platform']} - {item['resource']['url']}")
+    print(f"\n  " + "-" * 60)
+    print(f"  Total estimated time: {total} days (~{total // 30} months)")
 
 
-def display_roadmap(roadmap: list[dict], career_name: str):
-    """Display the learning roadmap for a chosen career."""
-    total_days = sum(r["days"] for r in roadmap)
-    
-    print(f"\n  {'=' * 60}")
-    print(f"  LEARNING ROADMAP: {career_name.upper()}")
-    print(f"  Total estimated duration: {total_days} days")
-    print(f"  {'=' * 60}")
-    
-    for i, skill_plan in enumerate(roadmap, 1):
-        print(f"\n  [{i}] {skill_plan['skill']}")
-        print(f"      Current Level: {skill_plan['current_level']}")
-        print(f"      Duration: {skill_plan['days']} days")
-        print(f"      Topics: {', '.join(skill_plan['topics'][:5])}")
-        print(f"      Sample Daily Tasks:")
-        for task in skill_plan["daily_tasks"][:3]:
-            print(f"        [ ] {task}")
-        if len(skill_plan["daily_tasks"]) > 3:
-            print(f"        ... and {len(skill_plan['daily_tasks']) - 3} more days")
+def display_classification_report(models, X_test, y_test, label_encoder):
+    """Print sklearn classification reports for each model."""
+    print("\n  " + "=" * 60)
+    print("  DETAILED CLASSIFICATION REPORTS")
+    print("  " + "=" * 60)
 
+    for name in ["Random Forest", "SVM"]:
+        model = models[name]
+        preds = model.predict(X_test)
+        print(f"\n  --- {name} ---")
+        report = classification_report(y_test, preds, zero_division=0)
+        for line in report.split("\n"):
+            print(f"  {line}")
+
+    # XGBoost uses encoded labels
+    xgb = models["XGBoost"]
+    y_test_enc = label_encoder.transform(y_test)
+    xgb_preds = xgb.predict(X_test)
+    xgb_preds_labels = label_encoder.inverse_transform(xgb_preds)
+    print(f"\n  --- XGBoost ---")
+    report = classification_report(y_test, xgb_preds_labels, zero_division=0)
+    for line in report.split("\n"):
+        print(f"  {line}")
+
+
+# =====================================================================
+# PIPELINE BUILDER
+# =====================================================================
+
+def build_pipeline():
+    """Full ML pipeline: data generation, split, scale, train, evaluate."""
+    print("\n  " + "#" * 62)
+    print("  #                                                            #")
+    print("  #    PATHFINDER AI  -  ML Career Recommendation Engine       #")
+    print("  #    Models: Random Forest | SVM | XGBoost  (Ensemble)       #")
+    print("  #                                                            #")
+    print("  " + "#" * 62)
+
+    # 1. Dataset
+    print("\n  [Step 1] Generating synthetic dataset...")
+    X, y = generate_synthetic_dataset(n_samples=2400, noise_std=0.55, seed=42)
+    print(f"           Shape: {X.shape[0]} samples x {X.shape[1]} features")
+    print(f"           Classes: {len(CAREERS)} careers")
+
+    # 2. Encode labels
+    le = LabelEncoder()
+    le.fit(CAREERS)
+
+    # 3. Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y,
+    )
+    print(f"           Train: {len(X_train)} | Test: {len(X_test)}")
+
+    # 4. Scale
+    scaler = StandardScaler()
+    X_train_s = scaler.fit_transform(X_train)
+    X_test_s  = scaler.transform(X_test)
+
+    # 5. Train
+    print("\n  [Step 2] Training ML models...")
+    models, metrics = train_models(X_train_s, y_train, X_test_s, y_test, le)
+
+    # 6. Evaluate
+    display_model_comparison(metrics)
+    analyze_feature_importance(models)
+    display_classification_report(models, X_test_s, y_test, le)
+
+    return models, scaler, le, metrics
+
+
+# =====================================================================
+# INTERACTIVE MODE
+# =====================================================================
 
 def main():
-    """Main entry point for the career recommendation system."""
-    print("\n" + "#" * 60)
-    print("#" + " " * 58 + "#")
-    print("#    PATHFINDER AI - Career Recommendation System" + " " * 9 + "#")
-    print("#    AI-Powered Career Guidance for Students" + " " * 14 + "#")
-    print("#" + " " * 58 + "#")
-    print("#" * 60)
-    
-    # Step 1: Collect behavioral data
-    behavioral_answers = collect_behavioral_answers()
-    
-    # Step 2: Collect skill levels
-    skill_levels = collect_skill_levels()
-    
-    # Step 3: Run recommendation algorithm
-    print("\n  Processing your responses with our AI algorithm...")
-    recommendations = recommend_careers(behavioral_answers, skill_levels)
-    
-    # Step 4: Compute alignment for top career
-    top_career = recommendations[0][0]
-    alignment = compute_alignment_scores(behavioral_answers, skill_levels, top_career)
-    
-    # Step 5: Display results
-    display_results(recommendations, alignment, behavioral_answers, skill_levels)
-    
-    # Step 6: Let user choose a career
-    print(f"\n  Select a career to view its learning roadmap:")
-    for i, (name, match, _data) in enumerate(recommendations[:6], 1):
-        print(f"    {i}) {name} ({match}% match)")
-    
-    while True:
-        try:
-            choice = int(input("\n  Enter your choice (1-6): ").strip())
-            if 1 <= choice <= min(6, len(recommendations)):
+    models, scaler, le, _ = build_pipeline()
+
+    behavioral_map = {
+        "work_env":      {"office": 0, "remote": 1, "hybrid": 2},
+        "activity":      {"building": 0, "data": 1, "design": 2, "managing": 3},
+        "learning":      {"courses": 0, "projects": 1, "reading": 2, "mentorship": 3},
+        "prog_interest": {"web": 0, "ml": 1, "mobile": 2, "systems": 3, "any": 4},
+        "math":          {"avoid": 0, "okay": 1, "love": 2},
+        "comm":          {"writing": 0, "technical": 1, "presenting": 2},
+        "creativity":    {"follow": 0, "improve": 1, "innovate": 2},
+    }
+
+    print("\n\n  " + "=" * 60)
+    print("  YOUR CAREER ASSESSMENT")
+    print("  " + "=" * 60)
+
+    questions = [
+        ("work_env",      "Preferred work environment (office/remote/hybrid): "),
+        ("activity",      "Preferred activity (building/data/design/managing): "),
+        ("learning",      "Learning style (courses/projects/reading/mentorship): "),
+        ("prog_interest", "Programming interest (web/ml/mobile/systems/any): "),
+        ("math",          "Math comfort (avoid/okay/love): "),
+        ("comm",          "Communication style (writing/technical/presenting): "),
+        ("creativity",    "Creativity approach (follow/improve/innovate): "),
+    ]
+
+    print("\n  --- Behavioral Questions ---")
+    behavioral = []
+    for key, prompt in questions:
+        while True:
+            answer = input(f"  {prompt}").strip().lower()
+            if answer in behavioral_map[key]:
+                behavioral.append(behavioral_map[key][answer])
                 break
-            print("  Please enter a valid number.")
-        except ValueError:
-            print("  Please enter a valid number.")
-    
-    chosen_career = recommendations[choice - 1][0]
-    
-    # Step 7: Generate and display roadmap
-    roadmap = generate_learning_roadmap(chosen_career, skill_levels)
-    display_roadmap(roadmap, chosen_career)
-    
-    # Step 8: Summary
-    total_days = sum(r["days"] for r in roadmap)
+            print(f"    Invalid. Options: {', '.join(behavioral_map[key].keys())}")
+
+    print("\n  --- Skill Levels (0=None, 1=Beginner, 2=Intermediate, 3=Advanced, 4=Expert) ---")
+    skills = []
+    for skill in SKILL_NAMES:
+        while True:
+            try:
+                level = int(input(f"  {skill} (0-4): ").strip())
+                if 0 <= level <= 4:
+                    skills.append(level)
+                    break
+                print("    Enter 0-4.")
+            except ValueError:
+                print("    Enter a valid number.")
+
+    fv = np.array(behavioral + skills, dtype=float)
+    ranked    = ensemble_predict(models, scaler, le, fv)
+    per_model = get_per_model_predictions(models, scaler, le, fv)
+
+    display_recommendations(ranked, per_model)
+
+    top = ranked[0][0]
+    roadmap = generate_learning_roadmap(top, skills)
+    display_roadmap(roadmap, top)
+
+    total_days = sum(r["days"] for r in roadmap) if roadmap else 0
     print(f"\n  {'=' * 60}")
     print(f"  SUMMARY")
     print(f"  {'=' * 60}")
-    print(f"  Chosen Career: {chosen_career}")
-    print(f"  Match Score: {recommendations[choice - 1][1]}%")
-    print(f"  Skills to Learn: {len(roadmap)}")
-    print(f"  Estimated Duration: {total_days} days (~{total_days // 30} months)")
-    print(f"\n  Good luck on your career journey! You've got this!")
+    print(f"  Top Career:         {top}")
+    print(f"  Ensemble Score:     {ranked[0][1]}%")
+    print(f"  Skills to Improve:  {len(roadmap)}")
+    if total_days:
+        print(f"  Estimated Duration: {total_days} days (~{total_days // 30} months)")
     print(f"  {'=' * 60}\n")
 
 
+# =====================================================================
+# DEMO MODE
+# =====================================================================
+
 def demo():
-    """
-    Demo mode: runs the full algorithm with sample data
-    (no interactive input needed). Shows the complete pipeline.
-    """
-    print("\n" + "#" * 60)
-    print("#" + " " * 58 + "#")
-    print("#    PATHFINDER AI - Career Recommendation System" + " " * 9 + "#")
-    print("#    >>> DEMO MODE (Sample Student Profile) <<<" + " " * 11 + "#")
-    print("#" + " " * 58 + "#")
-    print("#" * 60)
+    """Run the full pipeline with a sample student - no input needed."""
+    models, scaler, le, _ = build_pipeline()
 
-    # Sample student: interested in logic, data, ML, comfortable with math
-    sample_behavioral = {
-        "work_environment": "remote",
-        "activity_preference": "data",
-        "learning_style": "projects",
-        "programming_interest": "ml",
-        "math_comfort": "love",
-        "communication": "technical",
-        "creativity": "innovate",
-    }
-    print("\n  Sample Behavioral Answers:")
-    for qid, answer in sample_behavioral.items():
-        print(f"    {qid}: {answer}")
+    # Sample: data-oriented student who loves ML, strong Python & data tools
+    sample_b = [1, 1, 1, 1, 2, 1, 2]     # remote, data, projects, ml, love math, technical, innovate
+    sample_s = [3, 2, 2, 1, 1, 3, 2, 1]   # Python 3, JS 2, DB 2, HTML 1, Cloud 1, Data 3, Git 2, DevOps 1
 
-    # Sample skills: strong Python & data tools, moderate JS & databases
-    sample_skills = {
-        "python": 3,
-        "javascript": 2,
-        "databases": 2,
-        "html_css": 1,
-        "cloud": 1,
-        "data_tools": 3,
-        "git": 2,
-        "devops_tools": 1,
-    }
-    print("\n  Sample Skill Levels:")
-    skill_names = {"python": "Python", "javascript": "JavaScript", "databases": "Databases",
-                   "html_css": "HTML/CSS", "cloud": "Cloud", "data_tools": "Data Tools",
-                   "git": "Git", "devops_tools": "DevOps"}
-    for sid, level in sample_skills.items():
-        print(f"    {skill_names.get(sid, sid)}: {level}/4")
+    print("\n\n  " + "=" * 60)
+    print("  DEMO: SAMPLE STUDENT PROFILE")
+    print("  " + "=" * 60)
 
-    # Run recommendation
-    print("\n  Running recommendation algorithm...")
-    recommendations = recommend_careers(sample_behavioral, sample_skills)
+    print("\n  Behavioral Profile:")
+    for name, val in zip(BEHAVIORAL_NAMES, sample_b):
+        print(f"    {name:<22s}: {val}")
 
-    # Compute alignment for top career
-    top_career = recommendations[0][0]
-    alignment = compute_alignment_scores(sample_behavioral, sample_skills, top_career)
+    print("\n  Skill Levels:")
+    for name, val in zip(SKILL_NAMES, sample_s):
+        bar = "*" * val + "." * (4 - val)
+        print(f"    {name:<14s} [{bar}] {val}/4")
 
-    # Display results
-    display_results(recommendations, alignment, sample_behavioral, sample_skills)
+    fv = np.array(sample_b + sample_s, dtype=float)
+    ranked    = ensemble_predict(models, scaler, le, fv)
+    per_model = get_per_model_predictions(models, scaler, le, fv)
 
-    # Generate roadmap for top career
-    roadmap = generate_learning_roadmap(top_career, sample_skills)
-    display_roadmap(roadmap, top_career)
+    display_recommendations(ranked, per_model)
 
-    # Summary
-    total_days = sum(r["days"] for r in roadmap)
+    top = ranked[0][0]
+    roadmap = generate_learning_roadmap(top, sample_s)
+    display_roadmap(roadmap, top)
+
+    total_days = sum(r["days"] for r in roadmap) if roadmap else 0
     print(f"\n  {'=' * 60}")
-    print(f"  SUMMARY")
+    print(f"  DEMO SUMMARY")
     print(f"  {'=' * 60}")
-    print(f"  Top Career: {top_career}")
-    print(f"  Match Score: {recommendations[0][1]}%")
-    print(f"  Skills to Learn: {len(roadmap)}")
-    print(f"  Estimated Duration: {total_days} days (~{total_days // 30} months)")
+    print(f"  Top Career:         {top}")
+    print(f"  Ensemble Score:     {ranked[0][1]}%")
+    print(f"  Models Used:        Random Forest, SVM (RBF), XGBoost")
+    print(f"  Dataset Size:       2400 synthetic student profiles")
+    print(f"  Features:           {len(FEATURE_NAMES)} (7 behavioral + 8 skills)")
+    print(f"  Skills to Improve:  {len(roadmap)}")
+    if total_days:
+        print(f"  Estimated Duration: {total_days} days (~{total_days // 30} months)")
     print(f"\n  Algorithm successfully demonstrated!")
     print(f"  {'=' * 60}\n")
 
+
+# =====================================================================
+# ENTRY POINT
+# =====================================================================
 
 if __name__ == "__main__":
     import sys
@@ -819,5 +563,5 @@ if __name__ == "__main__":
         try:
             main()
         except (EOFError, KeyboardInterrupt):
-            print("\n  Interactive mode unavailable. Running demo mode instead...\n")
+            print("\n  Interactive mode unavailable. Running demo...\n")
             demo()

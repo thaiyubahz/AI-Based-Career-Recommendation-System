@@ -1,20 +1,41 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { Navbar } from "@/components/navbar"
 import { HeroSection } from "@/components/hero-section"
 import { QuizSection } from "@/components/quiz-section"
 import { ResultsSection } from "@/components/results-section"
 import { CareerDetail } from "@/components/career-detail"
 import { PlannerSection } from "@/components/planner-section"
+import { AuthPage } from "@/components/auth-page"
 import { behavioralQuestions, skillsQuestions, type CareerPath } from "@/lib/quiz-data"
 import { createInitialState, calculateCareerScores, type QuizState } from "@/lib/quiz-store"
+import { getCurrentUser, logoutUser, type AuthSession } from "@/lib/auth-store"
 
 export default function Home() {
+  const [authUser, setAuthUser] = useState<AuthSession | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+
   const [state, setState] = useState<QuizState>(createInitialState)
   const [behavioralIndex, setBehavioralIndex] = useState(0)
   const [skillsIndex, setSkillsIndex] = useState(0)
   const [plannerSkills, setPlannerSkills] = useState<string[]>([])
+
+  // Check for existing session on mount
+  useEffect(() => {
+    const user = getCurrentUser()
+    if (user) setAuthUser(user)
+    setAuthChecked(true)
+  }, [])
+
+  const handleLogout = useCallback(() => {
+    logoutUser()
+    setAuthUser(null)
+    setState(createInitialState())
+    setBehavioralIndex(0)
+    setSkillsIndex(0)
+    setPlannerSkills([])
+  }, [])
 
   const navigate = useCallback((step: string) => {
     setState((prev) => ({ ...prev, currentStep: step as QuizState["currentStep"] }))
@@ -96,9 +117,30 @@ export default function Home() {
 
   const totalQuestions = behavioralQuestions.length + skillsQuestions.length
 
+  // Loading state while checking auth
+  if (!authChecked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-10 w-10 animate-spin rounded-full border-3 border-primary border-t-transparent" />
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Auth gate: show login/signup if not authenticated
+  if (!authUser) {
+    return <AuthPage onAuthenticated={(user) => setAuthUser(user)} />
+  }
+
   return (
     <main className="min-h-screen bg-background">
-      <Navbar onNavigate={navigate} />
+      <Navbar
+        onNavigate={navigate}
+        userName={authUser.name}
+        onLogout={handleLogout}
+      />
 
       {state.currentStep === "landing" && (
         <HeroSection onStart={() => { setBehavioralIndex(0); navigate("behavioral") }} />
